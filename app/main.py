@@ -215,22 +215,29 @@ async def async_main(args):
 
 def _run_cloud_run_server():
     """
-    Cloud Run은 HTTP 요청으로 트리거됨.
-    POST / → schedule 1회 실행 → 200 반환
-    GET  /health → 200 반환
+    Cloud Run HTTP 서버.
+    포트를 즉시 열고, DB 초기화는 첫 POST 요청 시 실행.
+    GET  /health → 200 (즉시 응답)
+    POST /        → schedule 1회 실행 → 200
     """
     pool_holder = {}
+    ready = threading.Event()
 
-    async def _init():
-        pool = await create_pool(os.getenv("DATABASE_URL", ""))
-        await init(pool)
-        pool_holder["pool"] = pool
+    def _bg_init():
+        async def _async_init():
+            pool = await create_pool(os.getenv("DATABASE_URL", ""))
+            await init(pool)
+            pool_holder["pool"] = pool
+            log.info("DB 초기화 완료")
+            ready.set()
 
-    asyncio.run(_init())
+        asyncio.run(_async_init())
+
+    threading.Thread(target=_bg_init, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
-            pass  # HTTP 기본 로그 억제
+            pass
 
         def do_GET(self):
             self.send_response(200)
@@ -238,6 +245,11 @@ def _run_cloud_run_server():
             self.wfile.write(b"ok")
 
         def do_POST(self):
+            if not ready.wait(timeout=30):
+                self.send_response(503)
+                self.end_headers()
+                self.wfile.write(b"initializing")
+                return
             asyncio.run(run_schedule(pool_holder["pool"]))
             self.send_response(200)
             self.end_headers()
