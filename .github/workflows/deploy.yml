@@ -1,0 +1,130 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches: [v001-dev]
+
+env:
+  IMAGE_NAME:  ghcr.io/signal-craft-dev-team/data-backend
+  REGION:      asia-northeast3
+  SERVICE:     data-backend
+  PROJECT:     signalcraft-ver-1-202605
+  SA_EMAIL:    data-backend-runner@signalcraft-ver-1-202605.iam.gserviceaccount.com
+  GCS_BUCKET:  signalcraft-audio-bucket
+  GCS_PROJECT: signal-craft-ver-260330   # ← 실제 프로젝트 ID로 변경
+
+jobs:
+  # ─────────────────────────────────────────
+  # 1. Docker 빌드 & GHCR 푸시
+  # ─────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          secrets: |
+            github_token=${{ secrets.MODEL_REPO_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────
+  # 2. Cloud Run 배포
+  # ─────────────────────────────────────────
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: GCP 인증
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/55721952249/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: data-backend-runner@signalcraft-ver-1-202605.iam.gserviceaccount.com
+
+      - name: gcloud 설정
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Cloud Run 배포
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT }} \
+            --service-account=${{ env.SA_EMAIL }} \
+            --memory=1Gi \
+            --cpu=1 \
+            --timeout=300 \
+            --max-instances=1 \
+            --no-allow-unauthenticated \
+            --set-env-vars="GCS_BUCKET=${{ env.GCS_BUCKET }}" \
+            --set-secrets="\
+              DATABASE_URL=data-backend-db-url:latest,\
+              MONGODB_URI=data-backend-mongodb-uri:latest"
+
+  # ─────────────────────────────────────────
+  # 3. Slack 알림
+  # ─────────────────────────────────────────
+  notify:
+    name: Slack Notification
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy]
+    if: always()
+
+    steps:
+      - name: Send Slack message
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "${{ needs.deploy.result == 'success' && '✅ 배포 성공' || '❌ 배포 실패' }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ needs.deploy.result == 'success' && ':white_check_mark: *배포 성공*' || ':x: *배포 실패*' }}\n*서비스:* data-backend (Cloud Run)\n*브랜치:* `${{ github.ref_name }}`\n*작업자:* ${{ github.actor }}"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "워크플로우 보기" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

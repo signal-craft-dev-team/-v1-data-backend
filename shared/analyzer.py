@@ -8,6 +8,50 @@
 import numpy as np
 from shared.features import extract
 
+# ── 피처 메타데이터 (optional_text 구조 생성용) ──────────────────
+# description.key   : 주파수 범위 설명
+# description.value : 임계값 및 판별 방향 (단위: %)
+FEATURE_META = {
+    "_global": {
+        "b0_60": {
+            "key":   "0~60Hz 에너지 비율",
+            "value": "> 20% → 전체 OFF 판정",
+        },
+    },
+    "3C0F02E3B604": {  # 배큠펌프
+        "b0_60": {
+            "key":   "0~60Hz 에너지 비율",
+            "value": "< 5% → running",
+        },
+        "b6k_16k": {
+            "key":   "6kHz~16kHz 에너지 비율",
+            "value": "< 5% → running (하드웨어 노이즈 역전 현상 활용)",
+        },
+    },
+    "3C0F02E3B654": {  # 진공오븐챔버
+        "b1k_3k": {
+            "key":   "1kHz~3kHz 에너지 비율",
+            "value": "> 45% → running",
+        },
+    },
+    "A0F262EC9088": {  # 오일펌프
+        "b60_200": {
+            "key":   "60~200Hz 에너지 비율",
+            "value": "< 8% → running",
+        },
+        "b1k_3k": {
+            "key":   "1kHz~3kHz 에너지 비율",
+            "value": "> 40% → running",
+        },
+    },
+    "A0F262EC9388": {  # 워터칠러
+        "b3k_6k": {
+            "key":   "3kHz~6kHz 에너지 비율",
+            "value": "> 15% → running",
+        },
+    },
+}
+
 # ── 센서 ID → 기기명 매핑 ─────────────────────────────────────────
 SENSOR_NAMES = {
     "3C0F02E3B604": "배큠펌프",
