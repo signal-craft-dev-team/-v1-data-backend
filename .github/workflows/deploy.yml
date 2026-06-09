@@ -5,13 +5,13 @@ on:
     branches: [v001-dev]
 
 env:
-  IMAGE_NAME:  ghcr.io/signal-craft-dev-team/data-backend
+  GHCR_IMAGE:  ghcr.io/signal-craft-dev-team/data-backend
+  GAR_IMAGE:   asia-northeast3-docker.pkg.dev/signalcraft-ver-1-202605/data-backend/data-backend
   REGION:      asia-northeast3
   SERVICE:     data-backend
   PROJECT:     signalcraft-ver-1-202605
   SA_EMAIL:    data-backend-runner@signalcraft-ver-1-202605.iam.gserviceaccount.com
   GCS_BUCKET:  signalcraft-audio-bucket
-  GCS_PROJECT: signal-craft-ver-260330   # ← 실제 프로젝트 ID로 변경
 
 jobs:
   # ─────────────────────────────────────────
@@ -64,6 +64,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      packages: read
 
     steps:
       - name: GCP 인증
@@ -75,10 +76,20 @@ jobs:
       - name: gcloud 설정
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: GHCR → GAR 이미지 복사
+        run: |
+          gcloud auth configure-docker asia-northeast3-docker.pkg.dev --quiet
+          docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+          docker pull ${{ env.GHCR_IMAGE }}:${{ github.sha }}
+          docker tag ${{ env.GHCR_IMAGE }}:${{ github.sha }} ${{ env.GAR_IMAGE }}:${{ github.sha }}
+          docker tag ${{ env.GHCR_IMAGE }}:${{ github.sha }} ${{ env.GAR_IMAGE }}:latest
+          docker push ${{ env.GAR_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.GAR_IMAGE }}:latest
+
       - name: Cloud Run 배포
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
-            --image=${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image=${{ env.GAR_IMAGE }}:${{ github.sha }} \
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT }} \
             --service-account=${{ env.SA_EMAIL }} \
