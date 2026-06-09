@@ -85,29 +85,44 @@ jobs:
           docker push ${{ env.GAR_IMAGE }}:${{ github.sha }}
           docker push ${{ env.GAR_IMAGE }}:latest
 
-      - name: Cloud Run 배포
+      - name: Cloud Run Jobs 배포
         run: |
-          # 이전에 Secret으로 등록된 DATABASE_URL 제거
-          gcloud run services update ${{ env.SERVICE }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT }} \
-            --remove-secrets=DATABASE_URL 2>/dev/null || true
-
-          gcloud run deploy ${{ env.SERVICE }} \
-            --image=${{ env.GAR_IMAGE }}:${{ github.sha }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT }} \
-            --service-account=${{ env.SA_EMAIL }} \
-            --memory=1Gi \
-            --cpu=1 \
-            --timeout=300 \
-            --max-instances=1 \
-            --no-allow-unauthenticated \
-            --network=default \
-            --subnet=default \
-            --vpc-egress=private-ranges-only \
-            --set-env-vars="GCS_BUCKET=${{ env.GCS_BUCKET }},DATABASE_URL=${{ env.DATABASE_URL }}" \
-            --set-secrets="MONGODB_URI=data-backend-mongodb-uri:latest"
+          # Job이 존재하면 update, 없으면 create
+          if gcloud run jobs describe ${{ env.SERVICE }} \
+              --region=${{ env.REGION }} \
+              --project=${{ env.PROJECT }} > /dev/null 2>&1; then
+            gcloud run jobs update ${{ env.SERVICE }} \
+              --image=${{ env.GAR_IMAGE }}:${{ github.sha }} \
+              --region=${{ env.REGION }} \
+              --project=${{ env.PROJECT }} \
+              --service-account=${{ env.SA_EMAIL }} \
+              --memory=1Gi \
+              --cpu=1 \
+              --task-timeout=300s \
+              --max-retries=1 \
+              --network=default \
+              --subnet=default \
+              --vpc-egress=private-ranges-only \
+              --set-env-vars="GCS_BUCKET=${{ env.GCS_BUCKET }},DATABASE_URL=${{ env.DATABASE_URL }}" \
+              --set-secrets="MONGODB_URI=data-backend-mongodb-uri:latest" \
+              --args="--mode,schedule"
+          else
+            gcloud run jobs create ${{ env.SERVICE }} \
+              --image=${{ env.GAR_IMAGE }}:${{ github.sha }} \
+              --region=${{ env.REGION }} \
+              --project=${{ env.PROJECT }} \
+              --service-account=${{ env.SA_EMAIL }} \
+              --memory=1Gi \
+              --cpu=1 \
+              --task-timeout=300s \
+              --max-retries=1 \
+              --network=default \
+              --subnet=default \
+              --vpc-egress=private-ranges-only \
+              --set-env-vars="GCS_BUCKET=${{ env.GCS_BUCKET }},DATABASE_URL=${{ env.DATABASE_URL }}" \
+              --set-secrets="MONGODB_URI=data-backend-mongodb-uri:latest" \
+              --args="--mode,schedule"
+          fi
 
   # ─────────────────────────────────────────
   # 3. Slack 알림

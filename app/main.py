@@ -19,10 +19,6 @@ from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-# Cloud Run HTTP 서버 (schedule 모드 전용)
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
-
 from app import cache
 from app.db import create_pool
 from tqdm import tqdm
@@ -211,55 +207,6 @@ async def async_main(args):
         await pool.close()
 
 
-# ── Cloud Run HTTP 핸들러 ─────────────────────────────────────────
-
-def _run_cloud_run_server():
-    """
-    Cloud Run HTTP 서버.
-    포트를 즉시 열고, DB 초기화는 첫 POST 요청 시 실행.
-    GET  /health → 200 (즉시 응답)
-    POST /        → schedule 1회 실행 → 200
-    """
-    pool_holder = {}
-    ready = threading.Event()
-
-    def _bg_init():
-        async def _async_init():
-            pool = await create_pool(os.getenv("DATABASE_URL", ""))
-            await init(pool)
-            pool_holder["pool"] = pool
-            log.info("DB 초기화 완료")
-            ready.set()
-
-        asyncio.run(_async_init())
-
-    threading.Thread(target=_bg_init, daemon=True).start()
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            pass
-
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-
-        def do_POST(self):
-            if not ready.wait(timeout=30):
-                self.send_response(503)
-                self.end_headers()
-                self.wfile.write(b"initializing")
-                return
-            asyncio.run(run_schedule(pool_holder["pool"]))
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"done")
-
-    port = int(os.getenv("PORT", "8080"))
-    log.info(f"Cloud Run HTTP 서버 시작: port {port}")
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-
-
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="data_backend")
@@ -279,11 +226,7 @@ def main():
     if args.mode == "local" and (not args.start or not args.end):
         parser.error("local 모드는 --start, --end 필수")
 
-    if args.mode == "schedule" and os.getenv("K_SERVICE"):
-        # Cloud Run 환경 감지 (K_SERVICE 환경변수)
-        _run_cloud_run_server()
-    else:
-        asyncio.run(async_main(args))
+    asyncio.run(async_main(args))
 
 
 if __name__ == "__main__":
