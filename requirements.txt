@@ -1,0 +1,8 @@
+asyncpg>=0.29
+python-dotenv>=1.0
+google-cloud-storage>=2.0
+pymongo>=4.0
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12
+librosa>=0.10
