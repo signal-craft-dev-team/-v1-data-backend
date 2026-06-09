@@ -87,6 +87,12 @@ jobs:
 
       - name: Cloud Run 배포
         run: |
+          # 이전에 Secret으로 등록된 DATABASE_URL 제거
+          gcloud run services update ${{ env.SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT }} \
+            --remove-secrets=DATABASE_URL 2>/dev/null || true
+
           gcloud run deploy ${{ env.SERVICE }} \
             --image=${{ env.GAR_IMAGE }}:${{ github.sha }} \
             --region=${{ env.REGION }} \
