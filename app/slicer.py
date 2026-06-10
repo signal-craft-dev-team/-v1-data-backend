@@ -1,21 +1,22 @@
 """
 WAV 슬라이싱 모듈.
 
-MongoDB sensor_map 조회 → GCS 다운로드 → /tmp/{uuid}/ 슬라이싱 저장
-분석 완료 후 즉시 삭제.
+MongoDB sensor_map 조회 → WAV 로드 → 슬라이싱 → FFT 분석
 """
 import io
 import logging
 import os
+import re
 import shutil
 import tempfile
-import uuid
+import time
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from google.cloud import storage
+from pymongo import MongoClient
 
 from shared.features import extract
 from shared.analyzer import analyze_slice
@@ -25,36 +26,88 @@ log = logging.getLogger(__name__)
 GCS_BUCKET  = os.getenv("GCS_BUCKET", "signalcraft-audio-bucket")
 MONGODB_URI = os.getenv("MONGODB_URI", "")
 
-# MongoDB 클라이언트 (data_backend 자체 구현)
-from pymongo import MongoClient
-
 _DB_NAME   = "signalcraft-firestore"
 _COLL_NAME = "audio_upload_logs"
 
+# ── 싱글톤 클라이언트 ─────────────────────────────────────────────
+_mongo: MongoClient | None = None
+_gcs:   storage.Client | None = None
+
 
 def _mongo_client() -> MongoClient:
-    return MongoClient(MONGODB_URI)
+    global _mongo
+    if _mongo is None:
+        _mongo = MongoClient(MONGODB_URI)
+        log.debug("MongoDB 클라이언트 생성")
+    return _mongo
 
 
 def _gcs_client() -> storage.Client:
-    return storage.Client()
+    global _gcs
+    if _gcs is None:
+        _gcs = storage.Client()
+        log.debug("GCS 클라이언트 생성")
+    return _gcs
 
 
-# ── sensor_map 조회 ───────────────────────────────────────────────
+# ── sensor_map 일괄 조회 (날짜 단위 캐싱) ────────────────────────
+
+_sensor_map_cache: dict[str, dict | None] = {}  # {filename: sensor_map}
+
+
+def prefetch_sensor_maps(server_key: str, target_date: date) -> int:
+    """
+    특정 날짜의 sensor_map 전체를 한 번에 조회해서 메모리 캐싱.
+    파일별 개별 조회 대신 이 함수를 날짜 처리 전에 1회 호출.
+
+    Returns: 캐싱된 문서 수
+    """
+    t0     = time.perf_counter()
+    prefix = f"{server_key}/{target_date.isoformat()}/"
+    coll   = _mongo_client()[_DB_NAME][_COLL_NAME]
+    docs   = coll.find({"gcs_path": {"$regex": f"^{re.escape(prefix)}"}})
+
+    count = 0
+    for doc in docs:
+        gcs_path   = doc.get("gcs_path", "")
+        filename   = gcs_path.split("/")[-1]
+        sensor_map = doc.get("sensor_map")
+        _sensor_map_cache[filename] = (
+            dict(sensor_map) if sensor_map and isinstance(sensor_map, dict) else None
+        )
+        count += 1
+
+    elapsed = time.perf_counter() - t0
+    log.info(f"  [prefetch]  {count}개 sensor_map 캐싱 ({elapsed:.2f}s)")
+    return count
+
 
 def get_sensor_map(filename: str) -> dict[str, str] | None:
-    """파일명으로 MongoDB에서 sensor_map 조회."""
-    import re
-    client = _mongo_client()
-    coll   = client[_DB_NAME][_COLL_NAME]
-    doc    = coll.find_one({"gcs_path": {"$regex": re.escape(filename) + "$"}})
+    """캐시에서 즉시 조회. 없으면 MongoDB 단건 조회."""
+    if filename in _sensor_map_cache:
+        result = _sensor_map_cache[filename]
+        log.debug(f"  [sensor_map] 캐시 히트: {filename}")
+        return result
+
+    # 캐시 미스 → 단건 조회 (fallback)
+    t0   = time.perf_counter()
+    coll = _mongo_client()[_DB_NAME][_COLL_NAME]
+    doc  = coll.find_one({"gcs_path": {"$regex": re.escape(filename) + "$"}})
+    elapsed = time.perf_counter() - t0
+
     if not doc:
+        log.debug(f"  [sensor_map] 없음: {filename} ({elapsed:.2f}s)")
+        _sensor_map_cache[filename] = None
         return None
+
     sensor_map = doc.get("sensor_map")
-    return dict(sensor_map) if sensor_map and isinstance(sensor_map, dict) else None
+    result = dict(sensor_map) if sensor_map and isinstance(sensor_map, dict) else None
+    _sensor_map_cache[filename] = result
+    log.debug(f"  [sensor_map] DB조회 {len(result) if result else 0}개 ({elapsed:.2f}s)")
+    return result
 
 
-# ── GCS 다운로드 ──────────────────────────────────────────────────
+# ── WAV 다운로드 ──────────────────────────────────────────────────
 
 def download_wav(
     server_key: str,
@@ -62,29 +115,29 @@ def download_wav(
     filename: str,
     cache_dir: str | None = None,
 ) -> bytes | None:
-    """
-    WAV bytes 반환.
-    cache_dir 지정 시 로컬 캐시 우선, 없으면 GCS 다운로드.
-    """
+    t0 = time.perf_counter()
+
     if cache_dir:
         local = Path(cache_dir) / server_key / target_date.isoformat() / filename
         if local.exists():
-            return local.read_bytes()
-        log.debug(f"로컬 캐시 없음, GCS 시도: {filename}")
+            data = local.read_bytes()
+            log.debug(f"  [wav_load]  캐시 {len(data):,}B ({time.perf_counter()-t0:.2f}s)")
+            return data
 
     try:
         client = _gcs_client()
         path   = f"{server_key}/{target_date.isoformat()}/{filename}"
-        return client.bucket(GCS_BUCKET).blob(path).download_as_bytes()
+        data   = client.bucket(GCS_BUCKET).blob(path).download_as_bytes()
+        log.debug(f"  [wav_load]  GCS {len(data):,}B ({time.perf_counter()-t0:.2f}s)")
+        return data
     except Exception as e:
-        log.warning(f"GCS 다운로드 실패: {filename} — {e}")
+        log.warning(f"  [wav_load]  실패: {filename} — {e}")
         return None
 
 
 # ── WAV 슬라이싱 ──────────────────────────────────────────────────
 
 def _split(audio: np.ndarray, sensor_map: dict[str, str]) -> dict[str, np.ndarray]:
-    """단채널 WAV를 sensor_map 순서대로 균등 분할."""
     n = len(sensor_map)
     if n == 0:
         return {}
@@ -99,39 +152,31 @@ def _split(audio: np.ndarray, sensor_map: dict[str, str]) -> dict[str, np.ndarra
 
 def process(file_info: dict, cache_dir: str | None = None) -> list[dict] | None:
     """
-    파일 1개에 대해 슬라이싱 + 분석 실행.
+    파일 1개에 대해 sensor_map 조회 → WAV 로드 → 슬라이싱 → FFT 분석.
 
     Returns:
-        [
-          {
-            "hardware_id": str,
-            "machine_id":  uuid,
-            "result": {
-              "operational_state": str,
-              "operational_score": float,
-              "current_state":     str,
-              "features":          dict,
-            }
-          }
-        ]
-        또는 None (sensor_map 없음 / 다운로드 실패)
+        [{"hardware_id": str, "machine_id": uuid, "result": dict}]
+        또는 None
     """
-    filename   = file_info["filename"]
-    server_key = file_info["server_key"]
+    filename    = file_info["filename"]
+    server_key  = file_info["server_key"]
     target_date = file_info["date"]
+    t_start     = time.perf_counter()
 
-    # 1. sensor_map 조회
+    log.debug(f"[process] {filename}")
+
+    # 1. sensor_map
     sensor_map = get_sensor_map(filename)
     if not sensor_map:
-        log.debug(f"sensor_map 없음: {filename}")
         return None
 
-    # 2. WAV 다운로드 (로컬 캐시 우선)
+    # 2. WAV 로드
     wav_bytes = download_wav(server_key, target_date, filename, cache_dir)
     if not wav_bytes:
         return None
 
-    # 3. 슬라이싱
+    # 3. 슬라이싱 + 분석
+    t_fft = time.perf_counter()
     tmp_dir = Path(tempfile.mkdtemp(prefix="sc_"))
     try:
         with io.BytesIO(wav_bytes) as buf:
@@ -139,16 +184,12 @@ def process(file_info: dict, cache_dir: str | None = None) -> list[dict] | None:
 
         slices = _split(audio, sensor_map)
 
-        # 4. 센서별 분석
         results = []
         for hw_id, audio_slice in slices.items():
-            # cache에서 machine_id 조회
             from app import cache
             machine_id = cache.machine_id(hw_id)
             if not machine_id:
-                log.debug(f"캐시 miss: {hw_id}")
                 continue
-
             result = analyze_slice(audio_slice, hw_id)
             results.append({
                 "hardware_id": hw_id,
@@ -156,8 +197,11 @@ def process(file_info: dict, cache_dir: str | None = None) -> list[dict] | None:
                 "result":      result,
             })
 
+        log.debug(
+            f"  [fft]       {len(results)}개 센서 ({time.perf_counter()-t_fft:.2f}s) "
+            f"/ 총 {time.perf_counter()-t_start:.2f}s"
+        )
         return results if results else None
 
     finally:
-        # 5. tmp 즉시 삭제
         shutil.rmtree(tmp_dir, ignore_errors=True)

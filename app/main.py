@@ -28,7 +28,7 @@ from app import writer
 from app import interpolator
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
@@ -114,6 +114,9 @@ async def run_local(pool, start: date, end: date, cache_dir: str | None = None):
             if not files:
                 current += timedelta(days=1)
                 continue
+
+            # 날짜별 sensor_map 일괄 프리패치
+            slicer.prefetch_sensor_maps(server["hostname"], current)
 
             with tqdm(files, desc=str(current), unit="file", ncols=80, leave=False) as pbar:
                 last_ok = None

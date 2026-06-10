@@ -7,10 +7,27 @@ DB 저장 모듈.
 """
 import json
 import logging
+from datetime import datetime
 from uuid import uuid4
 
 import numpy as np
 from shared.analyzer import FEATURE_META, THRESHOLDS
+
+log = logging.getLogger(__name__)
+
+
+def _parse_recorded_at(filename: str) -> datetime:
+    """
+    파일명에서 실제 녹음 시각 추출.
+    20260526_071119.wav → 2026-05-26 07:11:19 UTC
+    파싱 실패 시 현재 시각 반환.
+    """
+    try:
+        stem = filename.replace(".wav", "")
+        return datetime.strptime(stem, "%Y%m%d_%H%M%S")
+    except ValueError:
+        log.warning(f"파일명 파싱 실패, now() 사용: {filename}")
+        return datetime.utcnow()
 
 
 class _NumpyEncoder(json.JSONEncoder):
@@ -127,6 +144,8 @@ async def _insert_history(
         ensure_ascii=False,
     )
 
+    recorded_at = _parse_recorded_at(filename)
+
     await conn.execute(
         """
         INSERT INTO machine_status_history (
@@ -135,7 +154,7 @@ async def _insert_history(
             current_state,
             optional_text, related_file_name,
             recorded_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """,
         history_id,
         machine_id,
@@ -144,6 +163,7 @@ async def _insert_history(
         result["current_state"],
         optional_text,
         filename,
+        recorded_at,
     )
     return history_id
 
