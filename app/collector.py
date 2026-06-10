@@ -216,11 +216,12 @@ async def update_bookmark(
     server_id: str,
     filename: str,
 ) -> None:
-    """처리 완료된 파일명으로 해당 서버의 모든 센서 bookmark 갱신."""
+    """처리 완료된 파일명으로 해당 서버의 모든 센서 bookmark + updated_at 갱신."""
     await conn.execute(
         """
         UPDATE edge_sensor
-        SET last_processed_file = $1
+        SET last_processed_file = $1,
+            updated_at          = now()
         WHERE server_id = $2
           AND (last_processed_file IS NULL OR last_processed_file < $1)
         """,
