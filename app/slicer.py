@@ -82,6 +82,34 @@ def prefetch_sensor_maps(server_key: str, target_date: date) -> int:
     return count
 
 
+def prefetch_sensor_maps_for_files(
+    server_key: str,
+    target_date: date,
+    filenames: list[str],
+) -> int:
+    """처리 대상 파일 목록만 한 번에 조회해서 캐싱."""
+    if not filenames:
+        return 0
+
+    t0   = time.perf_counter()
+    coll = _mongo_client()[_DB_NAME][_COLL_NAME]
+    paths = [f"{server_key}/{target_date.isoformat()}/{fn}" for fn in filenames]
+    docs  = coll.find({"gcs_path": {"$in": paths}})
+
+    count = 0
+    for doc in docs:
+        fn         = doc.get("gcs_path", "").split("/")[-1]
+        sensor_map = doc.get("sensor_map")
+        _sensor_map_cache[fn] = (
+            dict(sensor_map) if sensor_map and isinstance(sensor_map, dict) else None
+        )
+        count += 1
+
+    elapsed = time.perf_counter() - t0
+    log.debug(f"[sensor_map] 일괄 프리패치 {count}/{len(filenames)}개 ({elapsed:.2f}s)")
+    return count
+
+
 def get_sensor_map(filename: str) -> dict[str, str] | None:
     """캐시에서 즉시 조회. 없으면 MongoDB 단건 조회."""
     if filename in _sensor_map_cache:

@@ -183,7 +183,10 @@ async def run_schedule(pool):
 
         log.info(f"[{server_key}] 처리 대상: {len(files)}개 (bookmark: {bookmark})")
 
-        # 3. 파일별 분석 → DB 저장 → bookmark 갱신 (성공/실패 무관)
+        # 3. 처리 대상 파일의 sensor_map 일괄 프리패치
+        slicer.prefetch_sensor_maps_for_files(server_key, today, files)
+
+        # 4. 파일별 분석 → DB 저장 → bookmark 갱신 (성공/실패 무관)
         for filename in files:
             file_info = {
                 "filename":   filename,
@@ -202,7 +205,6 @@ async def run_schedule(pool):
         log.info(f"[{server_key}] 완료 → bookmark: {files[-1]}")
 
     log.info(f"── SCHEDULE 완료 ({total}개) ──")
-    await interpolator.run(pool)
 
 
 # ── 진입점 ───────────────────────────────────────────────────────
