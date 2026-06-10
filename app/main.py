@@ -14,7 +14,9 @@ data_backend 엔트리포인트.
 import asyncio
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+KST = timezone(timedelta(hours=9))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -167,7 +169,7 @@ async def run_schedule(pool):
     total = 0
     for server in servers:
         server_key = server["hostname"]
-        today      = date.today()
+        today      = datetime.now(KST).date()
 
         # 1. bookmark 조회
         async with pool.acquire() as conn:
