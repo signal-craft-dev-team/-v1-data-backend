@@ -147,6 +147,27 @@ async def collect(
     ]
 
 
+# ── 스케줄 전용 ──────────────────────────────────────────────────
+
+def get_latest_file(server_key: str, target_date: date) -> str | None:
+    """GCS에서 오늘 날짜의 가장 최신 파일 1개 반환."""
+    files = list_wav_files(server_key, target_date)
+    return files[-1] if files else None
+
+
+async def get_latest_bookmark(
+    conn: asyncpg.Connection, server_id: str
+) -> str | None:
+    """해당 서버의 센서 bookmark 중 가장 최신값 반환."""
+    sensors = await get_sensors_by_server(conn, server_id)
+    bookmarks = [
+        s["last_processed_file"]
+        for s in sensors
+        if s.get("last_processed_file")
+    ]
+    return max(bookmarks) if bookmarks else None
+
+
 # ── Bookmark 갱신 ─────────────────────────────────────────────────
 
 async def update_bookmark(

@@ -166,26 +166,42 @@ async def run_schedule(pool):
 
     total = 0
     for server in servers:
+        server_key = server["hostname"]
+        today      = date.today()
+
+        # 1. 현재 시간 기준 최신 파일
+        latest = collector.get_latest_file(server_key, today)
+        if not latest:
+            log.info(f"[{server_key}] 오늘 파일 없음")
+            continue
+
+        # 2. bookmark 비교
         async with pool.acquire() as conn:
-            files = await collector.collect(
-                conn,
-                server["hostname"],
-                str(server["id"]),
-                date.today(),
-            )
+            bookmark = await collector.get_latest_bookmark(conn, str(server["id"]))
 
-        for file_info in files:
-            results = slicer.process(file_info)
-            if results is None:
-                continue
-            saved = await writer.write(pool, file_info, results)
-            total += saved
+        if latest == bookmark:
+            log.info(f"[{server_key}] 최신 파일 동일 ({latest}) → 스킵")
+            continue
 
-        if files:
-            async with pool.acquire() as conn:
-                await collector.update_bookmark(
-                    conn, str(server["id"]), files[-1]["filename"]
-                )
+        log.info(f"[{server_key}] 신규: {latest}  (이전: {bookmark})")
+
+        # 3. 분석
+        file_info = {
+            "filename":   latest,
+            "server_key": server_key,
+            "date":       today,
+        }
+        results = slicer.process(file_info)
+
+        # 4. DB 저장
+        if results:
+            await writer.write(pool, file_info, results)
+            total += 1
+
+        # 5. bookmark 갱신 (성공/실패 무관)
+        async with pool.acquire() as conn:
+            await collector.update_bookmark(conn, str(server["id"]), latest)
+        log.info(f"bookmark 갱신: {latest}")
 
     log.info(f"── SCHEDULE 완료 ({total}개) ──")
     await interpolator.run(pool)

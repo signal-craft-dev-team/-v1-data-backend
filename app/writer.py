@@ -7,8 +7,10 @@ DB 저장 모듈.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
+
+KST = timezone(timedelta(hours=9))
 
 import numpy as np
 from shared.analyzer import FEATURE_META, THRESHOLDS
@@ -18,16 +20,15 @@ log = logging.getLogger(__name__)
 
 def _parse_recorded_at(filename: str) -> datetime:
     """
-    파일명에서 실제 녹음 시각 추출.
-    20260526_071119.wav → 2026-05-26 07:11:19 UTC
-    파싱 실패 시 현재 시각 반환.
+    파일명에서 실제 녹음 시각 추출 (KST 기준).
+    20260526_071119.wav → 2026-05-26 07:11:19+09:00
     """
     try:
         stem = filename.replace(".wav", "")
-        return datetime.strptime(stem, "%Y%m%d_%H%M%S")
+        return datetime.strptime(stem, "%Y%m%d_%H%M%S").replace(tzinfo=KST)
     except ValueError:
         log.warning(f"파일명 파싱 실패, now() 사용: {filename}")
-        return datetime.utcnow()
+        return datetime.now(tz=KST)
 
 
 class _NumpyEncoder(json.JSONEncoder):
