@@ -7,7 +7,9 @@ GCS 신규 파일 수집 + edge_sensor bookmark 관리.
 """
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 
 import asyncpg
 from google.cloud import storage
@@ -153,6 +155,45 @@ def get_latest_file(server_key: str, target_date: date) -> str | None:
     """GCS에서 오늘 날짜의 가장 최신 파일 1개 반환."""
     files = list_wav_files(server_key, target_date)
     return files[-1] if files else None
+
+
+def get_schedule_files(
+    server_key: str,
+    target_date: date,
+    bookmark: str | None,
+    window_minutes: int = 3,
+) -> list[str]:
+    """
+    스케줄 모드용 파일 목록.
+
+    안전장치 1 (bookmark): bookmark가 오늘이면 bookmark 이후 파일 전부
+    안전장치 2 (시간 윈도우): bookmark 없거나 다른 날짜이면 now - window_minutes 이후 파일
+    """
+    all_files = list_wav_files(server_key, target_date)
+    if not all_files:
+        return []
+
+    today_prefix = target_date.strftime("%Y%m%d")
+
+    # 안전장치 1: bookmark가 오늘 날짜이면 bookmark 이후 파일
+    if bookmark and bookmark.startswith(today_prefix):
+        try:
+            idx = all_files.index(bookmark)
+            result = all_files[idx + 1:]
+            if result:
+                log.debug(f"bookmark 기반: {len(result)}개 ({bookmark} 이후)")
+                return result
+        except ValueError:
+            pass
+
+    # 안전장치 2: now - window_minutes 이후 파일
+    cutoff = (
+        datetime.now(KST) - timedelta(minutes=window_minutes)
+    ).strftime("%Y%m%d_%H%M%S") + ".wav"
+
+    result = [f for f in all_files if f >= cutoff]
+    log.debug(f"시간 윈도우 기반: {len(result)}개 ({cutoff} 이후)")
+    return result
 
 
 async def get_latest_bookmark(

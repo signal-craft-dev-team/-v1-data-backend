@@ -169,39 +169,35 @@ async def run_schedule(pool):
         server_key = server["hostname"]
         today      = date.today()
 
-        # 1. 현재 시간 기준 최신 파일
-        latest = collector.get_latest_file(server_key, today)
-        if not latest:
-            log.info(f"[{server_key}] 오늘 파일 없음")
-            continue
-
-        # 2. bookmark 비교
+        # 1. bookmark 조회
         async with pool.acquire() as conn:
             bookmark = await collector.get_latest_bookmark(conn, str(server["id"]))
 
-        if latest == bookmark:
-            log.info(f"[{server_key}] 최신 파일 동일 ({latest}) → 스킵")
+        # 2. bookmark + 3분 윈도우로 처리 대상 파일 선택
+        files = collector.get_schedule_files(server_key, today, bookmark)
+        if not files:
+            log.info(f"[{server_key}] 신규 파일 없음 → 스킵")
             continue
 
-        log.info(f"[{server_key}] 신규: {latest}  (이전: {bookmark})")
+        log.info(f"[{server_key}] 처리 대상: {len(files)}개 (bookmark: {bookmark})")
 
-        # 3. 분석
-        file_info = {
-            "filename":   latest,
-            "server_key": server_key,
-            "date":       today,
-        }
-        results = slicer.process(file_info)
+        # 3. 파일별 분석 → DB 저장 → bookmark 갱신 (성공/실패 무관)
+        for filename in files:
+            file_info = {
+                "filename":   filename,
+                "server_key": server_key,
+                "date":       today,
+            }
+            results = slicer.process(file_info)
 
-        # 4. DB 저장
-        if results:
-            await writer.write(pool, file_info, results)
-            total += 1
+            if results:
+                await writer.write(pool, file_info, results)
+                total += 1
 
-        # 5. bookmark 갱신 (성공/실패 무관)
-        async with pool.acquire() as conn:
-            await collector.update_bookmark(conn, str(server["id"]), latest)
-        log.info(f"bookmark 갱신: {latest}")
+            async with pool.acquire() as conn:
+                await collector.update_bookmark(conn, str(server["id"]), filename)
+
+        log.info(f"[{server_key}] 완료 → bookmark: {files[-1]}")
 
     log.info(f"── SCHEDULE 완료 ({total}개) ──")
     await interpolator.run(pool)
